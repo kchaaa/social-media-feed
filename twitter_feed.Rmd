@@ -1,0 +1,345 @@
+---
+title: 'Sentimental Analysis: Twitter''s Feelings on Chronological Order'
+output:
+  html_document: default
+  html_notebook: default
+---
+```{r include=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+setwd()
+```
+
+This is a sentimental analysis using tweets from Twitter. I wanted to see how users felt about how social media feed nowadays having been optimized by an algorithm instead of in chronological order. 
+
+A few things need to be noted before continuing:
+
+* The tweets are from August 26, 2018-August 31, 2018 and September 3, 2018-September 5, 2018
+* I was only able to receive a max of 564 tweets from the API (218 without including retweets)
+
+If you want to see the code, visit the Github repo [here](https://github.com/kchaaa/sentimental-analysis-feed).
+
+# Set Up
+To set up, you need to install the following libraries:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# General Purpose (dplyr, tidyr, ggplot2, stringr, readr, purr, tibble, forcats)
+library(tidyverse)
+
+# Sentimental Analysis
+library(tidytext)
+
+# Access Twitter
+library(twitteR)
+```
+
+# Accessing Twitter
+In order to receive tweets, you need to sign up for a developer account [here](https://developer.twitter.com/en/apps). From there, you can access the consumer keys and access token:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Consumer and Access keys 
+consumer_key <- "consumer key"
+consumer_secret <- "secret consumer key"
+access_token <- "access token"
+access_secret <- "secret access token"
+
+# Authenticate
+setup_twitter_oauth(consumer_key, consumer_secret, access_token, access_secret)
+```
+
+Now that the app is authorized to access twitter, I will retrieve some tweets related to the key word: "**chronological feed**. I won't be including retweets because I fear the data will be clouded with duplicates from the retweets.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Search Twitter for tweets related to 'chronological feed' for the last year
+tweets <- twitteR::searchTwitter('chronological feed', n = 1800, lang ='en', since = '2018-08-24', until = '2018-09-01')
+# Strip Retweets
+tweets <- strip_retweets(tweets, strip_manual = TRUE, strip_mt = TRUE)
+# Convert to Data Frame
+df <- twListToDF(tweets)
+# Search Twitter for tweets related to 'chronological feed' for the last year
+tweets_2 <- twitteR::searchTwitter('chronological feed', n = 1800, lang ='en', since = '2018-08-08', until = '2018-09-16')
+# Strip Retweets
+tweets_2 <- strip_retweets(tweets_2, strip_manual = TRUE, strip_mt = TRUE)
+# Convert to Data Frame
+df_2 <- twListToDF(tweets_2)
+
+# Combine the data frames
+df_3 <- full_join(df, df_2)
+```
+
+Now I will save the tweets locally, so I don't hav-e to access the API every time and keep the same tweets as I originally downloaded.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Extract the data frame save it locally
+saveRDS(df, file='tweets.rds')
+saveRDS(df_2, file='tweets_2.rds')
+saveRDS(df_3, file='tweets_3.rds') # combination of df + df_2
+```
+
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Read in the locally saved data frame that will be used from now on
+data <- readRDS('tweets_3.rds')
+```
+
+# Cleaning Tweets
+### Cleaning 
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Glimpse at first few rows
+head(data$text, 6)
+```
+
+Looking at these tweets, it needs to be cleaned up for analysis. I will start by selecting the text columns only from the data frame.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+data1 <- data %>% select(text)
+```
+
+The first step of cleaning up these tweets is by getting rid of:
+* http and https links
+* the "@" symbol (addressing specific users)
+* the "#" symbol (addressing the topic)
+* non-english characters
+
+This is because when I do a word-by-word analysis, I don't want to analyze these links and symbols which won't yield any significant results.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Get rid of links
+data1$clean_text <- gsub("http.*", "", data1$text) 
+data1$clean_text <- gsub("https.*", "", data1$clean_text)
+# Get rid of '@' and '#'
+data1$clean_text <- gsub("@", "", data1$clean_text)
+data1$clean_text <- gsub("#", "", data1$clean_text)
+# Get rid of non-english characters
+data1$clean_text <- gsub("[^\x01-\x7F]", "", data1$clean_text)
+```
+
+The library *tidytext* includes a nice function to finish up cleaning the tweets. The function, *unnest_tokens()* will:
+* Convert text to lowercase
+* Remove punctuation
+* Add a Unique ID for each tweet
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+data1_clean <- data1 %>% 
+  dplyr::select(clean_text) %>% 
+  unnest_tokens(word, clean_text)
+```
+
+This is what it looks like now:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+head(data1_clean, 15)
+```
+
+### Dealing with Stop Words
+Here is what the top 15 most frequent words look like:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plot Top 15 Words ----
+data1_clean %>% 
+  count(word, sort=TRUE) %>% 
+  top_n(15) %>% 
+  mutate(word=reorder(word, n)) %>% 
+  ggplot(aes(x=word, y=n)) +
+  geom_text(aes(label=n), position=position_dodge(width=0.9), hjust=-0.3) +
+  geom_col() + 
+  xlab(NULL) + 
+  coord_flip() +
+    labs(y="Count",
+         x="Unique Words",
+         title="Count of Unique Words")
+```
+
+The problem with this is that it includes a lot of "stop words". Stop words are like "the", "a", "is", etc. This will affect the overall count of variables and the sentimental analysis. I will now remove the stop words.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Get Rid of Stop Words ----
+data("stop_words")
+
+cleaned_tweet_words <- data1_clean %>% 
+                          anti_join(stop_words)
+```
+
+Now let's see what the top 15 most frequent words look like without the stop words:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plot Top 15 Words ----
+cleaned_tweet_words %>% 
+  count(word, sort=TRUE) %>% 
+  top_n(15) %>% 
+  mutate(word=reorder(word, n)) %>% 
+  ggplot(aes(x=word, y=n)) +
+  geom_text(aes(label=n), position=position_dodge(width=0.9), hjust=-0.3) +
+  geom_col() + 
+  xlab(NULL) + 
+  coord_flip() +
+    labs(y="Count",
+         x="Unique Words",
+         title="Count of Unique Words",
+         subtitle="Stop Words Removed From List")
+```
+You will notice a lot of people talk about "chronological" and "feed" which is to be expected due to them being the key search terms. The terms that stand out to me are the ones related to social media:
+* twitter
+* instagram
+* media
+* social
+* jack (CEO of Twitter)
+* facebook
+
+This shows people are talking about how their experience using social media are affected by the order they receive the posts in.
+
+```{r include=FALSE, echo=TRUE, message=FALSE, warning=FALSE}
+# Sort by count
+cleaned_tweet_words <- cleaned_tweet_words %>% count(word, sort=TRUE)
+```
+
+# Sentimental Analysis
+###  Overview: tidytext
+In this text mining library for R, there are 3 general-purpose lexicons:
+* **AFINN** from Finn Årup Nielsen,
+  * Assigns the words with a score between -5 and 5 (positive/negative score = positive/negative sentiment respectively)
+* **bing** from Bing Liu and collaborators, and
+  * Determines if the word is positive or negative in a binary fashion
+* **NRC** from Saif Mohammad and Peter Turney
+  * Categorizes the words into categories of positive, negative, anger, anticipation, disgust, fear, joy, sadness, surprise, and trust
+  
+I will use each method to analyze the sentiment of each tweet
+
+To learn more, visit the [documentation](https://www.tidytextmining.com/sentiment.html).
+
+### Analysis
+Instead of keeping the unique IDs as row names, I converted it into its own column to combine the tweets that were separated word by word into 1.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Turn Unique ID into a Column
+data1_clean$tweet_index <- rownames(data1_clean)
+# Combine tweet_index into 1 ex 1, 1.1, 1.2, etc => 1
+data1_clean$tweet_index <- as.integer(data1_clean$tweet_index)
+```
+
+Now I will conduct the sentimental analysis using the 3 methods:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Afinn 
+afinn <- data1_clean %>% 
+  inner_join(get_sentiments("afinn")) %>%
+  group_by(index=tweet_index) %>% 
+  summarise(sentiment=sum(score)) %>% 
+  mutate(method="AFINN")
+  
+# Bing and NRC (calculating sentiment)
+bing_and_nrc <- bind_rows(data1_clean %>% 
+                            inner_join(get_sentiments("bing")) %>% 
+                            mutate(method="Bing et al."),
+                          data1_clean %>% 
+                            inner_join(get_sentiments("nrc") %>% 
+                                         filter(sentiment %in% c("positive", "negative"))) %>% 
+                            mutate(method="NRC")) %>% 
+  count(method, index=tweet_index, sentiment) %>% 
+  spread(sentiment, n, fill=0) %>% 
+  mutate(sentiment=positive - negative)
+# bing (just bing results)
+bing <- bing_and_nrc %>% 
+          filter(method=="Bing et al.")
+# NRC (just NRC results)
+nrc <- bing_and_nrc %>% 
+          filter(method=="NRC")
+```
+Here are a glimpse of each method:
+
+#### AFINN
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+head(afinn, 10)
+```
+
+#### bing
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+head(bing, 10)
+```
+
+#### NRC
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+head(nrc, 10)
+```
+
+Here is a visual representation of the sentiment score for each method:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plot Sentiment
+bind_rows(afinn,
+          bing_and_nrc) %>% 
+  ggplot(aes(index, sentiment, fill=method)) +
+  geom_col(show.legend=FALSE) +
+  facet_wrap(~method, ncol=1, scales="free_y")
+```
+It looks like there is an equal representation of positive and negative sentiments. An interesting note is that AFINN scored the words on the more extreme ends compared to the other 2 methods. Also, not all of the tweets were scored evenly among the 3 methods.
+
+After looking at the scores of each tweet, let's look at the sentiment scores overall.
+
+### Exploring Count for Sentiment
+I decided to include scores of 1 and -1 in the neutral category because it was close enough to a neutral feeling rather than a positive or negative sentiment.
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# AFINN Count
+afinn_positive <- sum(afinn$sentiment > 1)
+afinn_negative <- sum(afinn$sentiment < -1)
+afinn_neutral <- sum(afinn$sentiment == c(0,1,-1))
+# DataFrame
+method <- 'AFINN'
+type <- c('positive', 'negative', 'neutral')
+count <- as.integer(c(afinn_positive, afinn_negative, afinn_neutral))
+afinn_count <- data.frame(cbind(method, type, count), stringsAsFactors=FALSE)
+afinn_count$count <- as.integer(afinn_count$count)
+
+# NRC Count 
+nrc_positive <- sum(nrc$sentiment > 1)
+nrc_negative <- sum(nrc$sentiment < -1)
+nrc_neutral <- sum(nrc$sentiment == c(0,1,-1))
+# DataFrame
+method <- 'NRC'
+type <- c('positive', 'negative', 'neutral')
+count <- as.integer(c(nrc_positive, nrc_negative, nrc_neutral))
+nrc_count <- data.frame(cbind(method, type, count), stringsAsFactors=FALSE)
+nrc_count$count <- as.integer(nrc_count$count)
+
+# Bing Count
+bing_positive <- sum(bing$sentiment > 1)
+bing_negative <- sum(bing$sentiment < -1)
+bing_neutral <- sum(bing$sentiment == c(0,1,-1))
+# DataFrame
+method <- 'bing'
+type <- c('positive', 'negative', 'neutral')
+count <- c(bing_positive, bing_negative, bing_neutral)
+bing_count <- data.frame(cbind(method, type, count), stringsAsFactors=FALSE)
+bing_count$count <- as.integer(bing_count$count)
+```
+
+Here is a quick look of the sentiment count of each method:
+
+#### AFINN
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+afinn_count
+```
+
+#### Bing
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+bing_count
+```
+
+#### NRC
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+nrc_count
+```
+
+Here are visual representations of the sentiment count overall:
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plot: By Type
+bind_rows(afinn_count, nrc_count, bing_count) %>% 
+ggplot(aes(x=type, y=count)) +
+  geom_bar(aes(fill=method), position="dodge", stat="identity") +
+  labs(y="Count",
+       x="Type",
+       title="Count of Each Sentiment Type") +
+ ylim(0,80)
+```
+
+```{r include=TRUE, echo=TRUE, message=FALSE, warning=FALSE}
+# Plot: By Method
+bind_rows(afinn_count, nrc_count, bing_count) %>% 
+  ggplot(aes(x=method, y=count)) +
+  geom_bar(aes(fill=type), position="dodge", stat="identity") +
+  labs(y="Count",
+       x="Method",
+       title="Count of Each Method") +
+  ylim(0,80)
+```
+
+# Conclusion
+Overall, there seems to a more positive sentiment when it comes to people talking about their social media feeds in chronological order. While this was a nice insight to know, I don't know how true these results might be to reality. Whenever I see tweets on Twitter talking about how their social media feeds are ordered, it usually is in a negative context.
+
+### Shortcomings 
+This might be a shortcoming of tidytext due to how each method scores words as positive or negative. If I were to do this again, I would have to come up with a more "sophisticated" library of words that indicate how positive or negative the words are. I think looking at this in a qualitative/business strategy context would help me understand this better.
+
+Also, there might not have been enough information due to the lack of tweets. As mentioned earlier, I only was able to use less than 300 tweets. If Twitter's API would let me receive more tweets from a longer period of time, then I would have been able to conduct a better analysis.
